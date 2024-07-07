@@ -187,6 +187,116 @@ type GrpcLndServices struct {
 
 // NewLndServices creates a connection to the given lnd instance and creates a
 // set of required RPC services.
+func NewLndServicesHoupei(cfg *LndServicesConfig, ctx context.Context) *stateClient {
+	// We need to use a custom dialer so we can also connect to unix
+	// sockets and not just TCP addresses.
+	if cfg.Dialer == nil {
+		cfg.Dialer = lncfg.ClientAddressDialer(defaultRPCPort)
+	}
+
+	// Fall back to minimal compatible version if none if specified.
+	if cfg.CheckVersion == nil {
+		cfg.CheckVersion = minimalCompatibleVersion
+	}
+
+	// Of the macaroon directory, the custom macaroon path, and the custom
+	// macaroon hex, we only allow one to be set at once. If all are empty,
+	// that's fine, the default behavior is to use lnd's default directory
+	// to try to locate the macaroons.
+	macaroonOptions := []string{
+		cfg.MacaroonDir,
+		cfg.CustomMacaroonPath,
+		cfg.CustomMacaroonHex,
+	}
+	macOptionCount := 0
+	for _, option := range macaroonOptions {
+		if option != "" {
+			macOptionCount++
+		}
+	}
+	if macOptionCount > 1 {
+		return nil
+	}
+
+	// Based on the network, if the macaroon directory isn't set, then
+	// we'll use the expected default locations.
+	macaroonDir := cfg.MacaroonDir
+	if macaroonDir == "" {
+		switch cfg.Network {
+		case NetworkTestnet:
+			macaroonDir = filepath.Join(
+				defaultLndDir, defaultDataDir,
+				defaultChainSubDir, "bitcoin", "testnet",
+			)
+
+		case NetworkMainnet:
+			macaroonDir = filepath.Join(
+				defaultLndDir, defaultDataDir,
+				defaultChainSubDir, "bitcoin", "mainnet",
+			)
+
+		case NetworkSimnet:
+			macaroonDir = filepath.Join(
+				defaultLndDir, defaultDataDir,
+				defaultChainSubDir, "bitcoin", "simnet",
+			)
+
+		case NetworkSignet:
+			macaroonDir = filepath.Join(
+				defaultLndDir, defaultDataDir,
+				defaultChainSubDir, "bitcoin", "signet",
+			)
+
+		case NetworkRegtest:
+			macaroonDir = filepath.Join(
+				defaultLndDir, defaultDataDir,
+				defaultChainSubDir, "bitcoin", "regtest",
+			)
+
+		default:
+			return nil
+		}
+	}
+
+	// Setup connection with lnd
+	log.Infof("Creating lnd connection to %v", cfg.LndAddress)
+	conn, err := getClientConn(cfg)
+	if err != nil {
+		return nil
+	}
+
+	log.Infof("Connected to lnd")
+
+	//chainParams, err := cfg.Network.ChainParams()
+	//if err != nil {
+	//	return nil, err
+	//}
+
+	// We are going to check that the connected lnd is on the same network
+	// and is a compatible version with all the required subservers enabled.
+	// For this, we make two calls, both of which only need the readonly
+	// macaroon. We don't use the pouch yet because if not all subservers
+	// are enabled, then not all macaroons might be there and the user would
+	// get a more cryptic error message.
+	var readonlyMac serializedMacaroon
+	if cfg.CustomMacaroonHex != "" {
+		readonlyMac = serializedMacaroon(cfg.CustomMacaroonHex)
+	} else {
+		readonlyMac, err = loadMacaroon(
+			macaroonDir, string(ReadOnlyServiceMac), cfg.CustomMacaroonPath,
+		)
+		if err != nil {
+			return nil
+		}
+	}
+
+	//basicClient := lnrpc.NewLightningClient(conn)
+	stateClient := newStateClient(conn, readonlyMac)
+	return stateClient
+}
+
+// NewLndServices creates a connection to the given lnd instance and creates a
+// set of required RPC services.
 func NewLndServices(cfg *LndServicesConfig) (*GrpcLndServices, error) {
 	// We need to use a custom dialer so we can also connect to unix
 	// sockets and not just TCP addresses.
